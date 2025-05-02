@@ -1,0 +1,72 @@
+e621:
+  username: 'your_username'       # Ваш логин на e621
+  api_key: 'your_api_key'         # Ваш API ключ с e621
+  tags:
+    - fox
+    - wolf
+    - Female
+    - Male
+    - erection
+    - fellatio       # Вторичный сет
+    - sex
+    - humanoid_pussy
+    - vaginal_penetration
+    - tongue_penetration
+    - teratophilia   # Вторичный сет
+    - bioluminescence
+    - gender_transformation  # Вторичный сет
+    - forced_fingering        # Вторичный сет
+    - tentacles
+    - underwear_aside
+    - tf
+
+telegram:
+  bot_token: 'your_telegram_bot_token'   # Токен вашего Telegram-бота
+  chat_id: 'your_telegram_chat_id'       # ID чата или канала, куда бот будет отправлять сообщения
+
+proxy:
+  host: 'proxy_host'       # Адрес прокси-сервера (если используете)
+  port: 1080              # Порт прокси
+  login: 'proxy_login'    # Логин для прокси
+  password: 'proxy_password'  # Пароль для прокси
+
+settings:
+  proxy_on: true  # true или false, если хочешь работать без прокси
+  tags_count: 2  # Количество случайно выбираемых тегов из списка e621.tags
+  blacklist:
+    - loli
+    - gore
+    - cub
+    - rape
+    - scat
+    - diaper
+    - feral
+    - vore
+    - feederism
+    - messy_eater
+    - morbidly_obese
+    - overweight
+    - hyper_genitalia
+    - praying
+    - toilet
+    - diarrhea
+    - fart_cloud
+    - living_toilet
+    - xenophilia
+    - nightmare_fuel
+    - erotic_asphyxiation
+    - death
+    - fisting
+    - watersports
+    - guro
+    - inflation
+    - amputation
+    - disembowelment
+    - blood
+    - feces
+    - urine
+    - vomit
+    - torture
+    - snuff
+    - body_horror
+    - necrophilia
