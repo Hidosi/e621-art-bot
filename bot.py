@@ -1,50 +1,62 @@
 import requests
 import os
 import time
-import schedule
 import random
 import yaml
 import sys
 import codecs
 import logging
-import argparse
 import json
 from requests.auth import HTTPBasicAuth
 from requests.exceptions import RequestException
 from PIL import Image
 from datetime import datetime
+import threading
 
-# Принудительная настройка utf-8
+# Принудительная настройка utf-8 для вывода
 sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
 sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
 
-def setup_logger(log_level):
-    level_map = {0: logging.DEBUG, 1: logging.INFO, 2: logging.ERROR}
-    level = level_map.get(log_level, logging.INFO)
-    logger = logging.getLogger()
-    logger.setLevel(level)
+LOG_FILE = 'e621_bot.log'
+SENT_POSTS_FILE = 'sent_posts.json'
+CONFIG_PATH = 'config.yaml'
+
+# Настройка логгера
+def setup_logger(log_level=logging.INFO):
+    logger = logging.getLogger('e621_bot')
+    logger.setLevel(log_level)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s')
     if logger.hasHandlers():
         logger.handlers.clear()
-    file_handler = logging.FileHandler('e621_bot.log', encoding='utf-8')
+    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
     file_handler.setFormatter(formatter)
-    file_handler.setLevel(level)
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(formatter)
-    stream_handler.setLevel(level)
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)
     return logger
 
-parser = argparse.ArgumentParser(description='e621 Telegram Bot')
-parser.add_argument('--loglevel', type=int, choices=[0,1,2], default=1,
-                    help='Уровень логирования: 0 - подробный, 1 - стандартный (по умолчанию), 2 - только ошибки')
-args = parser.parse_args()
+logger = setup_logger()
 
-logger = setup_logger(args.loglevel)
+# Загрузка конфигурации из YAML
+def load_config(config_path=CONFIG_PATH):
+    try:
+        with open(config_path, 'r', encoding='utf-8') as file:
+            return yaml.safe_load(file)
+    except Exception as e:
+        logger.error(f"Ошибка загрузки конфигурации: {e}")
+        raise
 
-SENT_POSTS_FILE = 'sent_posts.json'
+# Сохранение конфигурации в YAML
+def save_config(config, config_path=CONFIG_PATH):
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(config, f, allow_unicode=True)
+        logger.info("Конфигурация сохранена")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения конфигурации: {e}")
 
+# Загрузка списка уже отправленных постов
 def load_sent_posts():
     if os.path.exists(SENT_POSTS_FILE):
         try:
@@ -55,6 +67,7 @@ def load_sent_posts():
             return set()
     return set()
 
+# Сохранение списка отправленных постов
 def save_sent_posts(sent_posts):
     try:
         with open(SENT_POSTS_FILE, 'w', encoding='utf-8') as f:
@@ -62,14 +75,7 @@ def save_sent_posts(sent_posts):
     except Exception as e:
         logger.error(f"Ошибка сохранения списка отправленных постов: {e}")
 
-def load_config(config_path='config.yaml'):
-    try:
-        with open(config_path, 'r', encoding='utf-8') as file:
-            return yaml.safe_load(file)
-    except Exception as e:
-        logger.error(f"Ошибка загрузки конфигурации: {e}")
-        raise
-
+# Получение случайной подписи из файла captions.txt
 def get_random_caption(filename='captions.txt'):
     try:
         with open(filename, 'r', encoding='utf-8') as f:
@@ -81,37 +87,7 @@ def get_random_caption(filename='captions.txt'):
         logger.error(f"Ошибка чтения caption из файла: {e}")
         return ''
 
-CONFIG = None
-try:
-    CONFIG = load_config()
-except Exception:
-    logger.critical("Не удалось загрузить конфигурацию. Завершение работы.")
-    exit(1)
-
-# Настройка прокси в зависимости от proxy_on
-proxy_on = CONFIG['settings'].get('proxy_on', False)
-
-if proxy_on:
-    PROXY_HOST = CONFIG['proxy']['host']
-    PROXY_PORT = CONFIG['proxy']['port']
-    PROXY_LOGIN = CONFIG['proxy']['login']
-    PROXY_PASSW = CONFIG['proxy']['password']
-
-    proxies = {
-        'http': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}',
-        'https': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}'
-    }
-    logger.info("Прокси включён")
-else:
-    proxies = None
-    logger.info("Прокси выключен, работаем напрямую")
-
-USERNAME = CONFIG['e621']['username']
-API_KEY = CONFIG['e621']['api_key']
-
-TELEGRAM_BOT_TOKEN = CONFIG['telegram']['bot_token']
-TELEGRAM_CHAT_ID = CONFIG['telegram']['chat_id']
-
+# Сжатие изображения для Telegram
 def compress_image(input_path, max_size=(1920, 1080), quality=85):
     try:
         with Image.open(input_path) as img:
@@ -124,7 +100,24 @@ def compress_image(input_path, max_size=(1920, 1080), quality=85):
         logger.error(f"Ошибка сжатия изображения: {e}")
         return input_path
 
-def send_photo_to_telegram(file_path, caption=None):
+# Отправка фото в Telegram
+def send_photo_to_telegram(file_path, caption=None, config=None):
+    if config is None:
+        logger.error("Конфигурация не передана в send_photo_to_telegram")
+        return False
+    TELEGRAM_BOT_TOKEN = config['telegram']['bot_token']
+    TELEGRAM_CHAT_ID = config['telegram']['chat_id']
+    proxy_on = config['settings'].get('proxy_on', False)
+    proxies = None
+    if proxy_on:
+        PROXY_HOST = config['proxy']['host']
+        PROXY_PORT = config['proxy']['port']
+        PROXY_LOGIN = config['proxy']['login']
+        PROXY_PASSW = config['proxy']['password']
+        proxies = {
+            'http': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}',
+            'https': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}'
+        }
     url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto'
     try:
         compressed_path = compress_image(file_path)
@@ -149,7 +142,24 @@ def send_photo_to_telegram(file_path, caption=None):
         logger.error(f"Критическая ошибка отправки: {e}")
         return False
 
-def send_video_to_telegram(file_path, caption=None):
+# Отправка видео в Telegram
+def send_video_to_telegram(file_path, caption=None, config=None):
+    if config is None:
+        logger.error("Конфигурация не передана в send_video_to_telegram")
+        return False
+    TELEGRAM_BOT_TOKEN = config['telegram']['bot_token']
+    TELEGRAM_CHAT_ID = config['telegram']['chat_id']
+    proxy_on = config['settings'].get('proxy_on', False)
+    proxies = None
+    if proxy_on:
+        PROXY_HOST = config['proxy']['host']
+        PROXY_PORT = config['proxy']['port']
+        PROXY_LOGIN = config['proxy']['login']
+        PROXY_PASSW = config['proxy']['password']
+        proxies = {
+            'http': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}',
+            'https': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}'
+        }
     url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo'
     try:
         with open(file_path, 'rb') as video:
@@ -170,30 +180,52 @@ def send_video_to_telegram(file_path, caption=None):
         logger.error(f"Критическая ошибка отправки видео: {e}")
         return False
 
-def send_media_to_telegram(file_path, caption=None):
+# Отправка медиа (фото или видео) в Telegram
+def send_media_to_telegram(file_path, caption=None, config=None):
     video_extensions = ('.mp4', '.mov', '.webm', '.mkv', '.avi')
     image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
     ext = os.path.splitext(file_path)[1].lower()
     if ext in video_extensions:
-        return send_video_to_telegram(file_path, caption)
+        return send_video_to_telegram(file_path, caption, config)
     elif ext in image_extensions:
-        return send_photo_to_telegram(file_path, caption)
+        return send_photo_to_telegram(file_path, caption, config)
     else:
         logger.error(f"Неизвестный тип файла для отправки: {file_path}")
         return False
 
+# Загрузка списка отправленных постов в память
 sent_posts = load_sent_posts()
 
-def download_random_image(max_attempts=3):
+# Функция скачивания случайного изображения и отправки в Telegram
+def download_random_image(config=None):
+    if config is None:
+        logger.error("Конфигурация не передана в download_random_image")
+        return False
     url = 'https://e621.net/posts.json'
-    tags = CONFIG['e621']['tags']
-    tags_count = CONFIG['settings']['tags_count']
-    blacklist = CONFIG['settings'].get('blacklist', [])
+    tags = config['e621']['tags']
+    tags_count = config['settings'].get('tags_count', len(tags))
+    blacklist = config['settings'].get('blacklist', [])
 
     # Убираем None и пустые из blacklist
     clean_blacklist = [tag for tag in blacklist if tag and str(tag).lower() != 'none']
 
     attempts = 0
+    max_attempts = 3
+    USERNAME = config['e621']['username']
+    API_KEY = config['e621']['api_key']
+
+    proxy_on = config['settings'].get('proxy_on', False)
+    proxies = None
+    if proxy_on:
+        PROXY_HOST = config['proxy']['host']
+        PROXY_PORT = config['proxy']['port']
+        PROXY_LOGIN = config['proxy']['login']
+        PROXY_PASSW = config['proxy']['password']
+        proxies = {
+            'http': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}',
+            'https': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}'
+        }
+
     while attempts < max_attempts:
         attempts += 1
         try:
@@ -271,11 +303,11 @@ def download_random_image(max_attempts=3):
 
             caption = "\n".join(caption_parts)
 
-            if send_media_to_telegram(filename, caption=caption):
+            if send_media_to_telegram(filename, caption=caption, config=config):
                 sent_posts.add(post_id)
                 sent_posts.add(post_md5)
                 save_sent_posts(sent_posts)
-                return
+                return True
             else:
                 logger.error("Не удалось отправить медиа, пробуем другой пост...")
 
@@ -287,19 +319,43 @@ def download_random_image(max_attempts=3):
             break
 
     logger.warning("Не удалось найти уникальное изображение после нескольких попыток, пропускаем публикацию")
+    return False
 
-def start_scheduling():
-    logger.info("Запуск планировщика")
-    schedule.every(2).minutes.do(download_random_image)
-    download_random_image()
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+# Управление планировщиком
+stop_scheduler = False
+scheduler_thread = None
 
+def scheduler_worker(config, interval_seconds):
+    global stop_scheduler
+    while not stop_scheduler:
+        try:
+            download_random_image(config)
+        except Exception as e:
+            logger.error(f"Ошибка в планировщике: {e}")
+        time.sleep(interval_seconds)
+
+def start_scheduler(config, interval_seconds=120):
+    global scheduler_thread, stop_scheduler
+    if scheduler_thread is None or not scheduler_thread.is_alive():
+        stop_scheduler = False
+        scheduler_thread = threading.Thread(target=scheduler_worker, args=(config, interval_seconds), daemon=True)
+        scheduler_thread.start()
+        logger.info(f"Планировщик запущен с интервалом {interval_seconds} секунд")
+
+def stop_scheduler_func():
+    global stop_scheduler
+    stop_scheduler = True
+    logger.info("Планировщик остановлен")
+
+# Если запускаем напрямую, стартуем планировщик с дефолтным интервалом
 if __name__ == '__main__':
     try:
-        start_scheduling()
+        config = load_config()
+        start_scheduler(config)
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
         logger.info("Работа приложения завершена пользователем")
+        stop_scheduler_func()
     except Exception as e:
         logger.critical(f"Критическая ошибка: {e}")
