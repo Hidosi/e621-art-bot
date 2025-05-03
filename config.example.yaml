@@ -33,6 +33,8 @@ proxy:
 settings:
   proxy_on: true  # true или false, если хочешь работать без прокси
   tags_count: 2  # Количество случайно выбираемых тегов из списка e621.tags
+  publish_interval_unit: minutes # Параметры отправки
+  publish_interval_value: 10 # Параметры отправки
   blacklist:
     - loli
     - gore
