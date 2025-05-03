@@ -90,7 +90,7 @@ with tab2:
     with col1:
         st.markdown('<div class="section-title">🌐 Настройки прокси</div>', unsafe_allow_html=True)
     with col2:
-        proxy_toggle = st.checkbox("", value=st.session_state['proxy_enabled_ui'], key="proxy_toggle")
+        proxy_toggle = st.checkbox("Включить прокси", value=st.session_state['proxy_enabled_ui'], key="proxy_toggle")
         st.session_state['proxy_enabled_ui'] = proxy_toggle
 
     proxy = config.get('proxy', {})
