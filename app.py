@@ -1,11 +1,14 @@
 import streamlit as st
 import yaml
+import json
+import os
 import threading
 import time
-from bot import download_random_image, load_config, save_config
+from bot import download_random_image, load_config, save_config, start_scheduler, stop_scheduler_func
 
 CONFIG_PATH = 'config.yaml'
 LOG_FILE = 'e621_bot.log'
+PUBLISHED_POSTS_FILE = 'published_posts.json'
 
 # Глобальные переменные для управления планировщиком
 stop_scheduler = False
@@ -61,12 +64,13 @@ except Exception as e:
     st.error(f"Ошибка загрузки конфигурации: {e}")
     st.stop()
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📌 Теги",
     "🌐 Прокси",
     "📤 Публикации",
     "📄 Логи",
-    "⚙️ Учетные данные"
+    "⚙️ Учетные данные",
+    "📚 Опубликованные"
 ])
 
 # --- Теги ---
@@ -146,15 +150,17 @@ with tab3:
                     interval_val = config['settings'].get('publish_interval_value', 2)
                     interval_unit = config['settings'].get('publish_interval_unit', 'minutes')
                     seconds = interval_val * 60 if interval_unit == 'minutes' else interval_val * 3600
-                    start_scheduler_with_interval(config, interval_seconds=seconds)
+                    start_scheduler(config, interval_seconds=seconds)
                     st.session_state['scheduler_running'] = True
                 st.success(f"Планировщик запущен с интервалом {interval_val} {interval_unit}")
+                st.rerun()  # Обновляем интерфейс сразу
         else:
             if st.button("⏹ Остановить планировщик"):
                 with st.spinner("Остановка планировщика..."):
-                    stop_scheduler_func_wrapper()
+                    stop_scheduler_func()
                     st.session_state['scheduler_running'] = False
                 st.warning("Планировщик остановлен")
+                st.rerun()  # Обновляем интерфейс сразу
 
 # --- Логи ---
 with tab4:
@@ -171,6 +177,7 @@ with tab4:
         try:
             open(LOG_FILE, 'w', encoding='utf-8').close()
             st.success("Логи очищены")
+            st.rerun()  # Обновляем интерфейс сразу
         except Exception as e:
             st.error(f"Ошибка при очистке логов: {e}")
 
@@ -196,3 +203,70 @@ with tab5:
         config['settings']['publish_interval_unit'] = interval_unit
         save_config(config, CONFIG_PATH)
         st.success("Учетные данные и интервал публикации сохранены!")
+
+# --- Просмотр постов ---
+with tab6:
+    st.markdown('<div class="section-title">📚 Галерея фото и видео</div>', unsafe_allow_html=True)
+    def load_published_posts_ui():
+        if os.path.exists(PUBLISHED_POSTS_FILE):
+            try:
+                with open(PUBLISHED_POSTS_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                st.error(f"Ошибка загрузки опубликованных постов: {e}")
+                return []
+        else:
+            return []
+
+
+    posts = load_published_posts_ui()
+
+    if not posts:
+        st.info("Пока нет опубликованных постов.")
+    else:
+        # Пагинация: по 6 постов на страницу
+        posts_per_page = 6
+        if 'page' not in st.session_state:
+            st.session_state.page = 0
+
+        total_pages = (len(posts) - 1) // posts_per_page + 1
+
+        col1, col2, col3 = st.columns([1, 6, 1])
+        with col1:
+            if st.button("⬅️ Назад") and st.session_state.page > 0:
+                st.session_state.page -= 1
+                st.rerun()
+        with col2:
+            st.markdown(f"Страница {st.session_state.page + 1} из {total_pages}")
+        with col3:
+            if st.button("Вперед ➡️") and st.session_state.page < total_pages - 1:
+                st.session_state.page += 1
+                st.rerun()
+
+        start_idx = st.session_state.page * posts_per_page
+        end_idx = start_idx + posts_per_page
+        page_posts = posts[start_idx:end_idx]
+
+        rows = 2
+        cols = 3
+        for row in range(rows):
+            cols_widgets = st.columns(cols)
+            for col in range(cols):
+                idx = row * cols + col
+                if idx >= len(page_posts):
+                    break
+                post = page_posts[idx]
+                with cols_widgets[col]:
+                    media_url = post.get('local_path') or post.get('image_url') or ''
+                    if media_url.lower().endswith(('.mp4', '.webm')):
+                        st.video(media_url)
+                    elif media_url:
+                        st.image(media_url, use_container_width=True)
+                    else:
+                        st.write("Нет медиа")
+
+                    caption = post.get('caption', '').split('\n')[0]
+                    st.markdown(f"**{caption}**")
+
+                    post_url = post.get('post_url', '#')
+                    st.markdown(f"[Открыть оригинал]({post_url})")

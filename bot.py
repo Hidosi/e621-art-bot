@@ -19,6 +19,7 @@ sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
 
 LOG_FILE = 'e621_bot.log'
 SENT_POSTS_FILE = 'sent_posts.json'
+PUBLISHED_POSTS_FILE = 'published_posts.json'
 CONFIG_PATH = 'config.yaml'
 
 # Настройка логгера
@@ -75,6 +76,27 @@ def save_sent_posts(sent_posts):
     except Exception as e:
         logger.error(f"Ошибка сохранения списка отправленных постов: {e}")
 
+# Загрузка опубликованных постов с подробностями
+def load_published_posts():
+    if os.path.exists(PUBLISHED_POSTS_FILE):
+        try:
+            with open(PUBLISHED_POSTS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки опубликованных постов: {e}")
+            return []
+    return []
+
+# Сохранение опубликованного поста с деталями
+def save_published_post(post_data):
+    posts = load_published_posts()
+    posts.append(post_data)
+    try:
+        with open(PUBLISHED_POSTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(posts, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения опубликованного поста: {e}")
+
 # Получение случайной подписи из файла captions.txt
 def get_random_caption(filename='captions.txt'):
     try:
@@ -126,6 +148,7 @@ def send_photo_to_telegram(file_path, caption=None, config=None):
             data = {'chat_id': TELEGRAM_CHAT_ID}
             if caption:
                 data['caption'] = caption
+                data['parse_mode'] = 'Markdown'
             logger.debug(f"Отправка фото в Telegram: {compressed_path} с caption: {caption}")
             response = requests.post(url, files=files, data=data, proxies=proxies, timeout=30)
         if compressed_path != file_path:
@@ -167,6 +190,7 @@ def send_video_to_telegram(file_path, caption=None, config=None):
             data = {'chat_id': TELEGRAM_CHAT_ID}
             if caption:
                 data['caption'] = caption
+                data['parse_mode'] = 'Markdown'
             logger.debug(f"Отправка видео в Telegram: {file_path} с caption: {caption}")
             response = requests.post(url, files=files, data=data, proxies=proxies, timeout=60)
         logger.debug(f"Ответ Telegram (видео): {response.status_code} {response.text}")
@@ -289,24 +313,34 @@ def download_random_image(config=None):
 
             caption_text = get_random_caption('captions.txt')
 
-            artists_line = f"Художник: {' '.join(f'#{tag}' for tag in artists)}" if artists else ""
-            characters_line = f"Персонаж: {' '.join(f'#{tag}' for tag in characters)}" if characters else ""
+            artists_line = f"👨‍🎨 Художник: {' '.join(f'#{tag}' for tag in artists)}" if artists else ""
+            characters_line = f"🎭 Персонаж: {' '.join(f'#{tag}' for tag in characters)}" if characters else ""
 
-            post_url = f"\nhttps://e621.net/posts/{post_id}"
+            caption_parts = [
+                caption_text,
+                artists_line,
+                characters_line,
+                f"----",
+                f"[Открыть оригинал]({post_url})"
+            ]
 
-            caption_parts = [caption_text]
-            if artists_line:
-                caption_parts.append(artists_line)
-            if characters_line:
-                caption_parts.append(characters_line)
-            caption_parts.append(post_url)
-
-            caption = "\n".join(caption_parts)
+            caption = "\n".join(filter(None, caption_parts))
 
             if send_media_to_telegram(filename, caption=caption, config=config):
                 sent_posts.add(post_id)
                 sent_posts.add(post_md5)
                 save_sent_posts(sent_posts)
+
+                # Сохраняем подробности публикации для просмотра в UI
+                post_data = {
+                    "id": post_id,
+                    "image_url": image_url,
+                    "local_path": filename,
+                    "caption": caption,
+                    "post_url": post_url
+                }
+                save_published_post(post_data)
+
                 return True
             else:
                 logger.error("Не удалось отправить медиа, пробуем другой пост...")
