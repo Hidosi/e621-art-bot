@@ -1,0 +1,259 @@
+<!-- templates/index.html -->
+{% extends "base.html" %}
+
+{% block content %}
+{% if not config %}
+    <div class="alert alert-danger">Ошибка загрузки конфигурации.</div>
+{% else %}
+
+    {% if tab == 'tags' %}
+        <h4>📌 Настройка тегов</h4>
+        <form method="post" class="mb-4">
+            <div class="mb-3">
+                <label for="tags" class="form-label">Теги (через запятую)</label>
+                <textarea id="tags" name="tags" class="form-control" rows="3">{{ config['e621']['tags'] | join(', ') }}</textarea>
+            </div>
+            <div class="mb-3">
+                <label for="blacklist" class="form-label">Блэклист (через запятую)</label>
+                <textarea id="blacklist" name="blacklist" class="form-control" rows="3">{{ config['settings'].get('blacklist', []) | join(', ') }}</textarea>
+            </div>
+            <button type="submit" class="btn btn-success">💾 Сохранить теги и блэклист</button>
+        </form>
+
+    {% elif tab == 'proxy' %}
+        <h4>🌐 Настройки прокси</h4>
+        <form method="post" class="mb-4">
+            <div class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" id="proxy_toggle" name="proxy_toggle" {% if proxy_enabled %}checked{% endif %}>
+                <label class="form-check-label" for="proxy_toggle">Включить прокси</label>
+            </div>
+
+            {% if proxy_enabled %}
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label for="proxy_host" class="form-label">Proxy Host</label>
+                    <input type="text" id="proxy_host" name="proxy_host" class="form-control" value="{{ config['proxy'].get('host', '') }}">
+                </div>
+                <div class="col-md-6">
+                    <label for="proxy_port" class="form-label">Proxy Port</label>
+                    <input type="text" id="proxy_port" name="proxy_port" class="form-control" value="{{ config['proxy'].get('port', '') }}">
+                </div>
+                <div class="col-md-6">
+                    <label for="proxy_login" class="form-label">Proxy Login</label>
+                    <input type="text" id="proxy_login" name="proxy_login" class="form-control" value="{{ config['proxy'].get('login', '') }}">
+                </div>
+                <div class="col-md-6">
+                    <label for="proxy_password" class="form-label">Proxy Password</label>
+                    <input type="password" id="proxy_password" name="proxy_password" class="form-control" value="{{ config['proxy'].get('password', '') }}">
+                </div>
+            </div>
+            {% endif %}
+
+            <button type="submit" class="btn btn-success mt-3">💾 Сохранить настройки прокси</button>
+        </form>
+
+    {% elif tab == 'publications' %}
+        <h4>📤 Управление публикациями</h4>
+        <form method="post" class="d-inline me-2">
+            <button name="publish_now" type="submit" class="btn btn-primary">🚀 Опубликовать сейчас</button>
+        </form>
+
+        {% if not scheduler_running %}
+        <form method="post" class="d-inline">
+            <button name="start_scheduler" type="submit" class="btn btn-success">▶️ Запустить планировщик</button>
+        </form>
+        {% else %}
+        <form method="post" class="d-inline">
+            <button name="stop_scheduler" type="submit" class="btn btn-danger">⏹ Остановить планировщик</button>
+        </form>
+        {% endif %}
+
+    {% elif tab == 'logs' %}
+        <h4>📄 Последние логи</h4>
+        <form method="post" class="mb-3">
+            <textarea class="form-control mb-3" rows="15" readonly>{{ logs }}</textarea>
+            <button name="clear_logs" type="submit" class="btn btn-warning">🧹 Очистить логи</button>
+        </form>
+
+    {% elif tab == 'credentials' %}
+        <h4>⚙️ Настройка учетных данных и интервала публикации</h4>
+        <form method="post" class="mb-4">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label for="username" class="form-label">e621 Username</label>
+                    <input type="text" id="username" name="username" class="form-control" value="{{ config['e621'].get('username', '') }}">
+                </div>
+                <div class="col-md-6">
+                    <label for="api_key" class="form-label">e621 API Key</label>
+                    <input type="text" id="api_key" name="api_key" class="form-control" value="{{ config['e621'].get('api_key', '') }}">
+                </div>
+                <div class="col-md-6">
+                    <label for="bot_token" class="form-label">Telegram Bot Token</label>
+                    <input type="text" id="bot_token" name="bot_token" class="form-control" value="{{ config['telegram'].get('bot_token', '') }}">
+                </div>
+                <div class="col-md-6">
+                    <label for="chat_id" class="form-label">Telegram Chat ID</label>
+                    <input type="text" id="chat_id" name="chat_id" class="form-control" value="{{ config['telegram'].get('chat_id', '') }}">
+                </div>
+                <div class="col-md-6">
+                    <label for="interval_val" class="form-label">Интервал публикации</label>
+                    <input type="number" id="interval_val" name="interval_val" min="1" max="1440" class="form-control" value="{{ config['settings'].get('publish_interval_value', 2) }}">
+                </div>
+                <div class="col-md-6">
+                    <label for="interval_unit" class="form-label">Единицы интервала</label>
+                    <select id="interval_unit" name="interval_unit" class="form-select">
+                        <option value="minutes" {% if config['settings'].get('publish_interval_unit', 'minutes') == 'minutes' %}selected{% endif %}>minutes</option>
+                        <option value="hours" {% if config['settings'].get('publish_interval_unit', 'minutes') == 'hours' %}selected{% endif %}>hours</option>
+                    </select>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-success mt-3">💾 Сохранить учетные данные и интервал</button>
+        </form>
+
+    {% elif tab == 'published' %}
+        <h4>📚 Галерея фото и видео</h4>
+        {% if not published_posts %}
+            <div class="alert alert-info">Пока нет опубликованных постов.</div>
+        {% else %}
+            <div class="published-gallery">
+                {% for post in published_posts %}
+                    <div class="card" data-index="{{ loop.index0 }}" data-media="{{ post.local_path or post.image_url or '' }}" data-posturl="{{ post.post_url }}">
+                        {% set media_url = post.local_path or post.image_url or '' %}
+                        {% if media_url.lower().endswith(('.mp4', '.webm')) %}
+                            <video class="card-img-top" muted preload="metadata" playsinline>
+                                <source src="{{ media_url }}" type="video/mp4" />
+                                Ваш браузер не поддерживает видео.
+                            </video>
+                        {% elif media_url %}
+                            <img src="{{ media_url }}" class="card-img-top" alt="media" />
+                        {% else %}
+                            <div class="card-img-top bg-secondary text-white d-flex align-items-center justify-content-center" style="height:220px;">
+                                Нет медиа
+                            </div>
+                        {% endif %}
+                        <div class="card-body d-flex flex-column">
+                            <div class="card-caption" style="font-size: 0.95rem; max-height: 4em; overflow-y: auto; white-space: pre-wrap; margin-bottom: 0.5rem;">
+                                {{ post.caption }}
+                            </div>
+                            <div class="card-tags" style="font-size: 0.85rem; color: #555; margin-bottom: 0.5rem; flex-shrink: 0;">
+                                {% if post.artist_text %}
+                                    <div><strong>Художник:</strong> {{ post.artist_text }}</div>
+                                {% endif %}
+                                {% if post.character_text %}
+                                    <div><strong>Персонаж:</strong> {{ post.character_text }}</div>
+                                {% endif %}
+                            </div>
+                            <a href="{{ post.post_url }}" target="_blank" class="btn btn-primary btn-sm mt-auto">Открыть оригинал</a>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+            <div class="d-flex justify-content-center align-items-center mt-3 gap-3">
+                <form method="post" class="d-inline">
+                    <button name="prev_page" type="submit" class="btn btn-outline-primary" {% if page == 0 %}disabled{% endif %}>⬅️ Назад</button>
+                </form>
+                <span>Страница {{ page + 1 }} из {{ total_pages }}</span>
+                <form method="post" class="d-inline">
+                    <button name="next_page" type="submit" class="btn btn-outline-primary" {% if page >= total_pages - 1 %}disabled{% endif %}>Вперед ➡️</button>
+                </form>
+            </div>
+
+            <!-- Модальное окно просмотра -->
+            <div class="modal fade" id="mediaModal" tabindex="-1" aria-labelledby="mediaModalLabel" aria-hidden="true">
+              <div class="modal-dialog modal-dialog-centered modal-lg">
+                <div class="modal-content bg-dark text-light">
+                  <div class="modal-header">
+                    <h5 class="modal-title" id="mediaModalLabel">Просмотр медиа</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+                  </div>
+                  <div class="modal-body text-center">
+                    <!-- Контент будет динамически вставляться сюда -->
+                  </div>
+                  <div class="modal-footer justify-content-between">
+                    <button type="button" class="btn btn-secondary" id="prevMediaBtn">⬅️ Назад</button>
+                    <a href="#" target="_blank" class="btn btn-primary" id="openOriginalBtn">Открыть оригинал</a>
+                    <button type="button" class="btn btn-secondary" id="nextMediaBtn">Вперед ➡️</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+        {% endif %}
+    {% endif %}
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const cards = document.querySelectorAll('.published-gallery .card');
+  const modal = new bootstrap.Modal(document.getElementById('mediaModal'));
+  const modalBody = document.querySelector('#mediaModal .modal-body');
+  const modalTitle = document.getElementById('mediaModalLabel');
+  const openOriginalBtn = document.getElementById('openOriginalBtn');
+  const prevBtn = document.getElementById('prevMediaBtn');
+  const nextBtn = document.getElementById('nextMediaBtn');
+
+  let currentIndex = 0;
+
+  function showMedia(index) {
+    if (index < 0) index = cards.length - 1;
+    if (index >= cards.length) index = 0;
+    currentIndex = index;
+
+    const card = cards[currentIndex];
+    const mediaSrc = card.getAttribute('data-media');
+    const postUrl = card.getAttribute('data-posturl');
+
+    modalTitle.textContent = 'Просмотр медиа';
+    openOriginalBtn.href = postUrl;
+
+    // Очистить тело модала
+    modalBody.innerHTML = '';
+
+    if (!mediaSrc) {
+      modalBody.textContent = 'Нет медиа для просмотра.';
+      return;
+    }
+
+    const ext = mediaSrc.split('.').pop().toLowerCase();
+    let mediaElement;
+    if (['mp4', 'webm', 'mov', 'mkv', 'avi'].includes(ext)) {
+      mediaElement = document.createElement('video');
+      mediaElement.src = mediaSrc;
+      mediaElement.controls = true;
+      mediaElement.autoplay = true;
+      mediaElement.style.maxWidth = '100%';
+      mediaElement.style.maxHeight = '80vh';
+    } else {
+      mediaElement = document.createElement('img');
+      mediaElement.src = mediaSrc;
+      mediaElement.alt = 'Медиа';
+      mediaElement.style.maxWidth = '100%';
+      mediaElement.style.maxHeight = '80vh';
+    }
+    modalBody.appendChild(mediaElement);
+  }
+
+  cards.forEach((card, idx) => {
+    card.style.cursor = 'pointer';
+    card.addEventListener('click', (e) => {
+      // Не открывать модал при клике на ссылку "Открыть оригинал"
+      if (e.target.tagName.toLowerCase() !== 'a') {
+        showMedia(idx);
+        modal.show();
+      }
+    });
+  });
+
+  prevBtn.addEventListener('click', () => {
+    showMedia(currentIndex - 1);
+  });
+
+  nextBtn.addEventListener('click', () => {
+    showMedia(currentIndex + 1);
+  });
+});
+</script>
+{% endblock %}

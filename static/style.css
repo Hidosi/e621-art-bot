@@ -1,0 +1,151 @@
+/* static/style.css */
+/* Дополнительные стили, если нужно */
+body.bg-dark {
+    background-color: #121212 !important;
+    color: #e0e0e0 !important;
+}
+
+body.bg-dark .navbar {
+    background-color: #1f1f1f !important;
+}
+
+body.bg-dark .nav-tabs .nav-link.active {
+    background-color: #333 !important;
+    color: #fff !important;
+}
+
+body.bg-dark .card {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+}
+
+body.bg-dark .form-control,
+body.bg-dark .form-select {
+    background-color: #2a2a2a;
+    color: #e0e0e0;
+    border-color: #444;
+}
+
+body.bg-dark .btn-outline-primary {
+    color: #66b2ff;
+    border-color: #66b2ff;
+}
+
+body.bg-dark .btn-outline-primary:hover {
+    background-color: #66b2ff;
+    color: #000;
+}
+
+/* Галерея: 4 колонки, 2 ряда - всего 8 карточек */
+.published-gallery {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr); /* 4 колонки */
+  gap: 1rem;
+}
+
+/* Карточки */
+.published-gallery .card {
+  height: 420px; /* увеличена высота для подписи и тегов */
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  overflow: hidden;
+  background-color: #fff;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+body.bg-dark .published-gallery .card {
+  background-color: #1e1e1e;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+}
+
+/* Медиа (изображение или видео) */
+.published-gallery .card-img-top,
+.published-gallery video {
+  object-fit: cover;
+  height: 220px; /* увеличена высота медиа */
+  width: 100%;
+  border-bottom: 1px solid #ddd;
+  transition: transform 0.3s ease;
+}
+
+/* Эффект при наведении на карточку */
+.published-gallery .card:hover {
+  transform: translateY(-6px) scale(1.03);
+  box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+  z-index: 10;
+}
+
+.published-gallery .card:hover .card-img-top,
+.published-gallery .card:hover video {
+  transform: scale(1.05);
+}
+
+/* Тело карточки */
+.published-gallery .card-body {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+}
+
+/* Подпись */
+.published-gallery .card-caption {
+  font-size: 0.95rem;
+  color: #333;
+  overflow-y: auto;
+  max-height: 4em;
+  margin-bottom: 0.5rem;
+  white-space: pre-wrap;
+}
+
+body.bg-dark .published-gallery .card-caption {
+  color: #ddd;
+}
+
+/* Теги художника и персонажа */
+.published-gallery .card-tags {
+  font-size: 0.85rem;
+  color: #555;
+  margin-bottom: 0.5rem;
+  flex-shrink: 0;
+}
+
+body.bg-dark .published-gallery .card-tags {
+  color: #bbb;
+}
+
+/* Кнопка "Открыть оригинал" */
+.published-gallery .btn-primary {
+  align-self: flex-start;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  border-radius: 6px;
+  transition: background-color 0.3s ease;
+  margin-top: auto;
+}
+
+.published-gallery .btn-primary:hover {
+  background-color: #0b5ed7;
+  color: #fff;
+}
+
+/* Модальное окно для просмотра */
+#mediaModal .modal-dialog {
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+#mediaModal .modal-body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 80vh;
+}
+
+#mediaModal img,
+#mediaModal video {
+  max-width: 100%;
+  max-height: 100%;
+}

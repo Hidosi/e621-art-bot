@@ -1,6 +1,5 @@
-requests>=2.25.1
-PyYAML>=5.4.1
-Pillow>=8.1.0
-schedule>=1.1.0
-SQLAlchemy>=1.4.0
-streamlit>=1.45.0
+flask>=2.0
+requests>=2.25
+PyYAML>=6.0
+Pillow>=9.0
+schedule>=1.1

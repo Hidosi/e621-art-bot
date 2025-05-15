@@ -1,18 +1,19 @@
-import streamlit as st
-import yaml
-import json
-import os
+# app.py
+from flask import Flask, render_template, request, redirect, url_for, flash, session, send_from_directory
 import threading
 import time
-from bot import download_random_image, load_config, save_config, start_scheduler, stop_scheduler_func
+import os
+import json
+from bot import load_config, save_config, download_random_image, load_published_posts
+
+app = Flask(__name__)
+app.secret_key = 'your_secret_key_here'  # Замените на свой секретный ключ
 
 CONFIG_PATH = 'config.yaml'
 LOG_FILE = 'e621_bot.log'
-PUBLISHED_POSTS_FILE = 'published_posts.json'
 
-# Глобальные переменные для управления планировщиком
-stop_scheduler = False
 scheduler_thread = None
+stop_scheduler = False
 
 def scheduler_worker(config, interval_seconds):
     global stop_scheduler
@@ -20,7 +21,7 @@ def scheduler_worker(config, interval_seconds):
         try:
             download_random_image(config)
         except Exception as e:
-            st.error(f"Ошибка в планировщике: {e}")
+            app.logger.error(f"Ошибка в планировщике: {e}")
         time.sleep(interval_seconds)
 
 def start_scheduler_with_interval(config, interval_seconds):
@@ -34,239 +35,158 @@ def stop_scheduler_func_wrapper():
     global stop_scheduler
     stop_scheduler = True
 
-# Инициализация состояния
-if 'scheduler_running' not in st.session_state:
-    st.session_state['scheduler_running'] = False
-if 'proxy_enabled_ui' not in st.session_state:
+def read_logs():
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r', encoding='utf-8') as f:
+            return f.read()
+    return ''
+
+# Новый маршрут для отдачи файлов из downloaded_images
+@app.route('/downloaded_images/<path:filename>')
+def downloaded_images(filename):
+    return send_from_directory('downloaded_images', filename)
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
     try:
-        config_cache = load_config(CONFIG_PATH)
-        st.session_state['proxy_enabled_ui'] = config_cache.get('settings', {}).get('proxy_on', False)
-    except Exception:
-        st.session_state['proxy_enabled_ui'] = False
+        config = load_config(CONFIG_PATH)
+    except Exception as e:
+        flash(f"Ошибка загрузки конфигурации: {e}", "danger")
+        config = None
 
-st.set_page_config(page_title="e621 Dashboard", page_icon="📡", layout="wide")
+    if 'scheduler_running' not in session:
+        session['scheduler_running'] = False
+    if 'proxy_enabled_ui' not in session:
+        session['proxy_enabled_ui'] = config.get('settings', {}).get('proxy_on', False) if config else False
+    if 'page' not in session:
+        session['page'] = 0
 
-# Стили
-st.markdown("""
-    <style>
-        .big-title { font-size: 40px; font-weight: bold; color: #4CAF50; }
-        .section-title { font-size: 24px; margin-top: 20px; color: #2196F3; display: flex; justify-content: space-between; align-items: center; }
-        .info-box { background-color: #f0f0f5; padding: 15px; border-radius: 10px; }
-    </style>
-""", unsafe_allow_html=True)
+    tab = request.args.get('tab', 'tags')
 
-st.markdown('<div class="big-title">📡 e621 Telegram Dashboard</div>', unsafe_allow_html=True)
+    if request.method == 'POST':
+        if tab == 'tags':
+            tags = request.form.get('tags', '')
+            blacklist = request.form.get('blacklist', '')
+            tags_list = [t.strip() for t in tags.split(',') if t.strip()]
+            blacklist_list = [t.strip() for t in blacklist.split(',') if t.strip()]
+            config['e621']['tags'] = tags_list
+            config['settings']['blacklist'] = blacklist_list
+            save_config(config, CONFIG_PATH)
+            flash("Теги и блэклист сохранены!", "success")
+            return redirect(url_for('index', tab='tags'))
 
-# Загружаем конфиг
-try:
-    config = load_config(CONFIG_PATH)
-except Exception as e:
-    st.error(f"Ошибка загрузки конфигурации: {e}")
-    st.stop()
+        elif tab == 'proxy':
+            proxy_on = 'proxy_toggle' in request.form
+            session['proxy_enabled_ui'] = proxy_on
+            if proxy_on:
+                proxy_host = request.form.get('proxy_host', '')
+                proxy_port = request.form.get('proxy_port', '')
+                proxy_login = request.form.get('proxy_login', '')
+                proxy_password = request.form.get('proxy_password', '')
+                try:
+                    proxy_port_int = int(proxy_port)
+                except:
+                    proxy_port_int = proxy_port
+                config['proxy'] = {
+                    'host': proxy_host,
+                    'port': proxy_port_int,
+                    'login': proxy_login,
+                    'password': proxy_password
+                }
+            else:
+                config['proxy'] = {}
+            config['settings']['proxy_on'] = proxy_on
+            save_config(config, CONFIG_PATH)
+            flash("Настройки прокси сохранены!", "success")
+            return redirect(url_for('index', tab='proxy'))
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📌 Теги",
-    "🌐 Прокси",
-    "📤 Публикации",
-    "📄 Логи",
-    "⚙️ Учетные данные",
-    "📚 Опубликованные"
-])
-
-# --- Теги ---
-with tab1:
-    st.markdown('<div class="section-title">📌 Настройка тегов</div>', unsafe_allow_html=True)
-    tags = st.text_area("Теги (через запятую)", value=", ".join(config['e621']['tags']))
-    tags_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
-
-    blacklist = st.text_area("Блэклист (через запятую)", value=", ".join(config['settings'].get('blacklist', [])))
-    blacklist_list = [tag.strip() for tag in blacklist.split(",") if tag.strip()]
-
-    if st.button("💾 Сохранить теги и блэклист"):
-        config['e621']['tags'] = tags_list
-        config['settings']['blacklist'] = blacklist_list
-        save_config(config, CONFIG_PATH)
-        st.success("Теги и блэклист сохранены!")
-
-# --- Прокси ---
-with tab2:
-    col1, col2 = st.columns([6, 1])
-    with col1:
-        st.markdown('<div class="section-title">🌐 Настройки прокси</div>', unsafe_allow_html=True)
-    with col2:
-        proxy_toggle = st.checkbox("Включить прокси", value=st.session_state['proxy_enabled_ui'], key="proxy_toggle")
-        st.session_state['proxy_enabled_ui'] = proxy_toggle
-
-    proxy = config.get('proxy', {})
-    settings = config.get('settings', {})
-
-    if st.session_state['proxy_enabled_ui']:
-        col1, col2 = st.columns(2)
-        with col1:
-            proxy_host = st.text_input("Proxy Host", value=proxy.get('host', ''))
-            proxy_login = st.text_input("Proxy Login", value=proxy.get('login', ''))
-        with col2:
-            proxy_port = st.text_input("Proxy Port", value=str(proxy.get('port', '')))
-            proxy_password = st.text_input("Proxy Password", value=proxy.get('password', ''), type="password")
-    else:
-        proxy_host = proxy_login = proxy_port = proxy_password = None
-
-    if st.button("💾 Сохранить настройки прокси"):
-        if st.session_state['proxy_enabled_ui']:
-            config['proxy'] = {
-                'host': proxy_host or '',
-                'port': int(proxy_port) if proxy_port and proxy_port.isdigit() else proxy_port or '',
-                'login': proxy_login or '',
-                'password': proxy_password or ''
-            }
-        else:
-            config['proxy'] = {}
-        config['settings']['proxy_on'] = st.session_state['proxy_enabled_ui']
-        save_config(config, CONFIG_PATH)
-        st.success("Настройки прокси сохранены!")
-
-# --- Публикации ---
-with tab3:
-    st.markdown('<div class="section-title">📤 Управление публикациями</div>', unsafe_allow_html=True)
-
-    col1, col2 = st.columns([2, 6])
-
-    with col1:
-        if st.button("🚀 Опубликовать сейчас"):
-            st.info("Публикация запущена...")
-            try:
-                success = download_random_image(config)
-                if success:
-                    st.success("Публикация выполнена!")
-                else:
-                    st.error("Публикация не удалась.")
-            except Exception as e:
-                st.error(f"Ошибка при публикации: {e}")
-
-    with col2:
-        if not st.session_state.get('scheduler_running', False):
-            if st.button("▶️ Запустить планировщик"):
-                with st.spinner("Запуск планировщика..."):
-                    interval_val = config['settings'].get('publish_interval_value', 2)
-                    interval_unit = config['settings'].get('publish_interval_unit', 'minutes')
-                    seconds = interval_val * 60 if interval_unit == 'minutes' else interval_val * 3600
-                    start_scheduler(config, interval_seconds=seconds)
-                    st.session_state['scheduler_running'] = True
-                st.success(f"Планировщик запущен с интервалом {interval_val} {interval_unit}")
-                st.rerun()  # Обновляем интерфейс сразу
-        else:
-            if st.button("⏹ Остановить планировщик"):
-                with st.spinner("Остановка планировщика..."):
-                    stop_scheduler_func()
-                    st.session_state['scheduler_running'] = False
-                st.warning("Планировщик остановлен")
-                st.rerun()  # Обновляем интерфейс сразу
-
-# --- Логи ---
-with tab4:
-    st.markdown('<div class="section-title">📄 Последние логи</div>', unsafe_allow_html=True)
-    if st.checkbox("Показать логи"):
-        try:
-            with open(LOG_FILE, 'r', encoding='utf-8') as f:
-                logs = f.read()
-            st.text_area("Логи", value=logs, height=300)
-        except Exception as e:
-            st.error(f"Не удалось загрузить логи: {e}")
-
-    if st.button("🧹 Очистить логи"):
-        try:
-            open(LOG_FILE, 'w', encoding='utf-8').close()
-            st.success("Логи очищены")
-            st.rerun()  # Обновляем интерфейс сразу
-        except Exception as e:
-            st.error(f"Ошибка при очистке логов: {e}")
-
-# --- Учетные данные ---
-with tab5:
-    st.markdown('<div class="section-title">⚙️ Настройка учетных данных и интервала публикации</div>', unsafe_allow_html=True)
-    username = st.text_input("e621 Username", value=config['e621'].get('username', ''))
-    api_key = st.text_input("e621 API Key", value=config['e621'].get('api_key', ''))
-    bot_token = st.text_input("Telegram Bot Token", value=config['telegram'].get('bot_token', ''))
-    chat_id = st.text_input("Telegram Chat ID", value=str(config['telegram'].get('chat_id', '')))
-
-    interval_val = st.number_input("Интервал публикации", min_value=1, max_value=1440,
-                                   value=config['settings'].get('publish_interval_value', 2), step=1)
-    interval_unit = st.selectbox("Единицы интервала", options=['minutes', 'hours'],
-                                 index=0 if config['settings'].get('publish_interval_unit', 'minutes') == 'minutes' else 1)
-
-    if st.button("💾 Сохранить учетные данные и интервал"):
-        config['e621']['username'] = username
-        config['e621']['api_key'] = api_key
-        config['telegram']['bot_token'] = bot_token
-        config['telegram']['chat_id'] = chat_id
-        config['settings']['publish_interval_value'] = interval_val
-        config['settings']['publish_interval_unit'] = interval_unit
-        save_config(config, CONFIG_PATH)
-        st.success("Учетные данные и интервал публикации сохранены!")
-
-# --- Просмотр постов ---
-with tab6:
-    st.markdown('<div class="section-title">📚 Галерея фото и видео</div>', unsafe_allow_html=True)
-    def load_published_posts_ui():
-        if os.path.exists(PUBLISHED_POSTS_FILE):
-            try:
-                with open(PUBLISHED_POSTS_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                st.error(f"Ошибка загрузки опубликованных постов: {e}")
-                return []
-        else:
-            return []
-
-
-    posts = load_published_posts_ui()
-
-    if not posts:
-        st.info("Пока нет опубликованных постов.")
-    else:
-        # Пагинация: по 6 постов на страницу
-        posts_per_page = 6
-        if 'page' not in st.session_state:
-            st.session_state.page = 0
-
-        total_pages = (len(posts) - 1) // posts_per_page + 1
-
-        col1, col2, col3 = st.columns([1, 6, 1])
-        with col1:
-            if st.button("⬅️ Назад") and st.session_state.page > 0:
-                st.session_state.page -= 1
-                st.rerun()
-        with col2:
-            st.markdown(f"Страница {st.session_state.page + 1} из {total_pages}")
-        with col3:
-            if st.button("Вперед ➡️") and st.session_state.page < total_pages - 1:
-                st.session_state.page += 1
-                st.rerun()
-
-        start_idx = st.session_state.page * posts_per_page
-        end_idx = start_idx + posts_per_page
-        page_posts = posts[start_idx:end_idx]
-
-        rows = 2
-        cols = 3
-        for row in range(rows):
-            cols_widgets = st.columns(cols)
-            for col in range(cols):
-                idx = row * cols + col
-                if idx >= len(page_posts):
-                    break
-                post = page_posts[idx]
-                with cols_widgets[col]:
-                    media_url = post.get('local_path') or post.get('image_url') or ''
-                    if media_url.lower().endswith(('.mp4', '.webm')):
-                        st.video(media_url)
-                    elif media_url:
-                        st.image(media_url, use_container_width=True)
+        elif tab == 'publications':
+            if 'publish_now' in request.form:
+                flash("Публикация запущена...", "info")
+                try:
+                    success = download_random_image(config)
+                    if success:
+                        flash("Публикация выполнена!", "success")
                     else:
-                        st.write("Нет медиа")
+                        flash("Публикация не удалась.", "danger")
+                except Exception as e:
+                    flash(f"Ошибка при публикации: {e}", "danger")
+                return redirect(url_for('index', tab='publications'))
 
-                    caption = post.get('caption', '').split('\n')[0]
-                    st.markdown(f"**{caption}**")
+            elif 'start_scheduler' in request.form:
+                interval_val = config['settings'].get('publish_interval_value', 2)
+                interval_unit = config['settings'].get('publish_interval_unit', 'minutes')
+                seconds = interval_val * 60 if interval_unit == 'minutes' else interval_val * 3600
+                start_scheduler_with_interval(config, seconds)
+                session['scheduler_running'] = True
+                flash(f"Планировщик запущен с интервалом {interval_val} {interval_unit}", "success")
+                return redirect(url_for('index', tab='publications'))
 
-                    post_url = post.get('post_url', '#')
-                    st.markdown(f"[Открыть оригинал]({post_url})")
+            elif 'stop_scheduler' in request.form:
+                stop_scheduler_func_wrapper()
+                session['scheduler_running'] = False
+                flash("Планировщик остановлен", "warning")
+                return redirect(url_for('index', tab='publications'))
+
+        elif tab == 'logs':
+            if 'clear_logs' in request.form:
+                try:
+                    open(LOG_FILE, 'w', encoding='utf-8').close()
+                    flash("Логи очищены", "success")
+                except Exception as e:
+                    flash(f"Ошибка при очистке логов: {e}", "danger")
+                return redirect(url_for('index', tab='logs'))
+
+        elif tab == 'credentials':
+            username = request.form.get('username', '')
+            api_key = request.form.get('api_key', '')
+            bot_token = request.form.get('bot_token', '')
+            chat_id = request.form.get('chat_id', '')
+            interval_val = int(request.form.get('interval_val', 2))
+            interval_unit = request.form.get('interval_unit', 'minutes')
+
+            config['e621']['username'] = username
+            config['e621']['api_key'] = api_key
+            config['telegram']['bot_token'] = bot_token
+            config['telegram']['chat_id'] = chat_id
+            config['settings']['publish_interval_value'] = interval_val
+            config['settings']['publish_interval_unit'] = interval_unit
+            save_config(config, CONFIG_PATH)
+            flash("Учетные данные и интервал публикации сохранены!", "success")
+            return redirect(url_for('index', tab='credentials'))
+
+        elif tab == 'published':
+            if 'prev_page' in request.form:
+                if session['page'] > 0:
+                    session['page'] -= 1
+                return redirect(url_for('index', tab='published'))
+            elif 'next_page' in request.form:
+                posts = load_published_posts()
+                posts_per_page = 6
+                total_pages = (len(posts) - 1) // posts_per_page + 1
+                if session['page'] < total_pages - 1:
+                    session['page'] += 1
+                return redirect(url_for('index', tab='published'))
+
+    published_posts = load_published_posts()
+    posts_per_page = 6
+    total_pages = (len(published_posts) - 1) // posts_per_page + 1
+    page = session.get('page', 0)
+    start_idx = page * posts_per_page
+    end_idx = start_idx + posts_per_page
+    page_posts = published_posts[start_idx:end_idx]
+
+    logs = read_logs()
+
+    return render_template('index.html',
+                           config=config,
+                           tab=tab,
+                           proxy_enabled=session['proxy_enabled_ui'],
+                           scheduler_running=session['scheduler_running'],
+                           logs=logs,
+                           published_posts=page_posts,
+                           page=page,
+                           total_pages=total_pages)
+
+if __name__ == '__main__':
+    app.run(debug=True)
