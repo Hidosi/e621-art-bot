@@ -7,6 +7,7 @@ import sys
 import codecs
 import logging
 import json
+import subprocess
 from requests.auth import HTTPBasicAuth
 from requests.exceptions import RequestException
 from PIL import Image
@@ -165,11 +166,35 @@ def send_photo_to_telegram(file_path, caption=None, config=None):
         logger.error(f"Критическая ошибка отправки: {e}")
         return False
 
-# Отправка видео в Telegram
+# Конвертация webm в mp4 с помощью ffmpeg
+def convert_webm_to_mp4(input_path):
+    output_path = input_path.rsplit('.', 1)[0] + '.mp4'
+    try:
+        subprocess.run([
+            'ffmpeg', '-i', input_path,
+            '-c:v', 'libx264', '-preset', 'fast',
+            '-c:a', 'aac', '-strict', 'experimental',
+            output_path
+        ], check=True)
+        return output_path
+    except Exception as e:
+        logger.error(f"Ошибка конвертации webm в mp4: {e}")
+        return None
+
+# Отправка видео в Telegram с конвертацией webm в mp4
 def send_video_to_telegram(file_path, caption=None, config=None):
     if config is None:
         logger.error("Конфигурация не передана в send_video_to_telegram")
         return False
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == '.webm':
+        mp4_path = convert_webm_to_mp4(file_path)
+        if mp4_path:
+            file_path = mp4_path
+        else:
+            logger.error("Не удалось конвертировать webm в mp4, отправляем оригинал")
+
     TELEGRAM_BOT_TOKEN = config['telegram']['bot_token']
     TELEGRAM_CHAT_ID = config['telegram']['chat_id']
     proxy_on = config['settings'].get('proxy_on', False)
@@ -196,6 +221,13 @@ def send_video_to_telegram(file_path, caption=None, config=None):
         logger.debug(f"Ответ Telegram (видео): {response.status_code} {response.text}")
         if response.status_code == 200:
             logger.info("Видео успешно отправлено в Телеграм")
+            # Если был создан временный mp4, можно удалить его после отправки
+            if ext == '.webm' and mp4_path and os.path.exists(mp4_path):
+                try:
+                    os.remove(mp4_path)
+                    logger.debug(f"Удалён временный файл конвертированного видео: {mp4_path}")
+                except Exception as e:
+                    logger.error(f"Ошибка удаления временного файла: {e}")
             return True
         else:
             logger.error(f"Ошибка при отправке видео: {response.status_code} {response.text}")
@@ -206,10 +238,11 @@ def send_video_to_telegram(file_path, caption=None, config=None):
 
 # Отправка медиа (фото или видео) в Telegram
 def send_media_to_telegram(file_path, caption=None, config=None):
-    video_extensions = ('.mp4', '.mov', '.webm', '.mkv', '.avi')
-    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+    video_extensions = ('.mp4', '.mov', '.mkv', '.avi')  # убрал .webm из видео
+    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.webm')  # добавил .webm сюда, чтобы обрабатывать через send_video_to_telegram с конвертацией
+
     ext = os.path.splitext(file_path)[1].lower()
-    if ext in video_extensions:
+    if ext in video_extensions or ext == '.webm':
         return send_video_to_telegram(file_path, caption, config)
     elif ext in image_extensions:
         return send_photo_to_telegram(file_path, caption, config)

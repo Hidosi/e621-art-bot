@@ -1,10 +1,6 @@
-# app.py
 from flask import Flask, render_template, request, redirect, url_for, flash, session, send_from_directory
-import threading
-import time
 import os
-import json
-from bot import load_config, save_config, download_random_image, load_published_posts
+from bot import load_config, save_config, download_random_image, load_published_posts, start_scheduler, stop_scheduler_func
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key_here'  # Замените на свой секретный ключ
@@ -12,36 +8,6 @@ app.secret_key = 'your_secret_key_here'  # Замените на свой сек
 CONFIG_PATH = 'config.yaml'
 LOG_FILE = 'e621_bot.log'
 
-scheduler_thread = None
-stop_scheduler = False
-
-def scheduler_worker(config, interval_seconds):
-    global stop_scheduler
-    while not stop_scheduler:
-        try:
-            download_random_image(config)
-        except Exception as e:
-            app.logger.error(f"Ошибка в планировщике: {e}")
-        time.sleep(interval_seconds)
-
-def start_scheduler_with_interval(config, interval_seconds):
-    global scheduler_thread, stop_scheduler
-    if scheduler_thread is None or not scheduler_thread.is_alive():
-        stop_scheduler = False
-        scheduler_thread = threading.Thread(target=scheduler_worker, args=(config, interval_seconds), daemon=True)
-        scheduler_thread.start()
-
-def stop_scheduler_func_wrapper():
-    global stop_scheduler
-    stop_scheduler = True
-
-def read_logs():
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, 'r', encoding='utf-8') as f:
-            return f.read()
-    return ''
-
-# Новый маршрут для отдачи файлов из downloaded_images
 @app.route('/downloaded_images/<path:filename>')
 def downloaded_images(filename):
     return send_from_directory('downloaded_images', filename)
@@ -117,13 +83,13 @@ def index():
                 interval_val = config['settings'].get('publish_interval_value', 2)
                 interval_unit = config['settings'].get('publish_interval_unit', 'minutes')
                 seconds = interval_val * 60 if interval_unit == 'minutes' else interval_val * 3600
-                start_scheduler_with_interval(config, seconds)
+                start_scheduler(config, seconds)
                 session['scheduler_running'] = True
                 flash(f"Планировщик запущен с интервалом {interval_val} {interval_unit}", "success")
                 return redirect(url_for('index', tab='publications'))
 
             elif 'stop_scheduler' in request.form:
-                stop_scheduler_func_wrapper()
+                stop_scheduler_func()
                 session['scheduler_running'] = False
                 flash("Планировщик остановлен", "warning")
                 return redirect(url_for('index', tab='publications'))
@@ -176,7 +142,10 @@ def index():
     end_idx = start_idx + posts_per_page
     page_posts = published_posts[start_idx:end_idx]
 
-    logs = read_logs()
+    logs = ''
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r', encoding='utf-8') as f:
+            logs = f.read()
 
     return render_template('index.html',
                            config=config,
@@ -189,4 +158,4 @@ def index():
                            total_pages=total_pages)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='10.9.0.1', port=5000)
