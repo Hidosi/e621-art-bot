@@ -13,6 +13,7 @@ from requests.exceptions import RequestException
 from PIL import Image
 from datetime import datetime
 import threading
+import multiprocessing
 
 # Принудительная настройка utf-8 для вывода
 sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
@@ -166,20 +167,38 @@ def send_photo_to_telegram(file_path, caption=None, config=None):
         logger.error(f"Критическая ошибка отправки: {e}")
         return False
 
-# Конвертация webm в mp4 с помощью ffmpeg
-def convert_webm_to_mp4(input_path):
+# Функция для запуска в отдельном процессе
+def convert_webm_to_mp4_process(input_path, output_queue):
     output_path = input_path.rsplit('.', 1)[0] + '.mp4'
+    MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024  # 50 Мб
     try:
-        subprocess.run([
+        result = subprocess.run([
             'ffmpeg', '-i', input_path,
             '-c:v', 'libx264', '-preset', 'fast',
             '-c:a', 'aac', '-strict', 'experimental',
+            '-movflags', '+faststart',
+            '-vf', 'scale=1280:-2',  # ограничиваем ширину до 1280px
+            '-crf', '28',             # уменьшаем качество видео
+            '-fs', str(MAX_VIDEO_SIZE_BYTES),
             output_path
-        ], check=True)
-        return output_path
-    except Exception as e:
+        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+
+        logger.debug(f"FFmpeg stdout: {result.stdout.decode()}")
+        logger.debug(f"FFmpeg stderr: {result.stderr.decode()}")
+
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            output_queue.put(output_path)
+        else:
+            logger.error("Конвертированный файл поврежден или пуст")
+            output_queue.put(None)
+
+    except subprocess.CalledProcessError as e:
         logger.error(f"Ошибка конвертации webm в mp4: {e}")
-        return None
+        logger.error(e.stderr.decode())
+        output_queue.put(None)
+    except subprocess.TimeoutExpired:
+        logger.error("Конвертация превысила допустимое время (90 сек)")
+        output_queue.put(None)
 
 # Отправка видео в Telegram с конвертацией webm в mp4
 def send_video_to_telegram(file_path, caption=None, config=None):
@@ -188,12 +207,40 @@ def send_video_to_telegram(file_path, caption=None, config=None):
         return False
 
     ext = os.path.splitext(file_path)[1].lower()
+    mp4_path = None
+    MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024  # 50 Мб
+
     if ext == '.webm':
-        mp4_path = convert_webm_to_mp4(file_path)
-        if mp4_path:
-            file_path = mp4_path
+        output_queue = multiprocessing.Queue()
+        process = multiprocessing.Process(target=convert_webm_to_mp4_process, args=(file_path, output_queue))
+        process.start()
+        process.join(timeout=120)
+        if process.is_alive():
+            logger.warning("Процесс конвертации завис, принудительно завершаем...")
+            process.terminate()
+            process.join()
+            logger.error("Процесс конвертации был остановлен")
+            return False
+
+        if not output_queue.empty():
+            mp4_path = output_queue.get()
         else:
-            logger.error("Не удалось конвертировать webm в mp4, отправляем оригинал")
+            logger.error("Не удалось получить результат конвертации")
+            return False
+
+        if not mp4_path or not os.path.exists(mp4_path):
+            logger.error("Конвертированный файл не найден")
+            return False
+
+        file_path = mp4_path
+
+    # Проверяем размер файла
+    file_size = os.path.getsize(file_path)
+    if file_size > MAX_VIDEO_SIZE_BYTES:
+        logger.warning(f"Видео слишком большое ({file_size / (1024*1024):.2f} МБ), пробуем другой пост.")
+        if mp4_path and os.path.exists(mp4_path):
+            os.remove(mp4_path)
+        return False
 
     TELEGRAM_BOT_TOKEN = config['telegram']['bot_token']
     TELEGRAM_CHAT_ID = config['telegram']['chat_id']
@@ -208,7 +255,9 @@ def send_video_to_telegram(file_path, caption=None, config=None):
             'http': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}',
             'https': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}'
         }
+
     url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo'
+
     try:
         with open(file_path, 'rb') as video:
             files = {'video': video}
@@ -218,16 +267,15 @@ def send_video_to_telegram(file_path, caption=None, config=None):
                 data['parse_mode'] = 'Markdown'
             logger.debug(f"Отправка видео в Telegram: {file_path} с caption: {caption}")
             response = requests.post(url, files=files, data=data, proxies=proxies, timeout=60)
+
         logger.debug(f"Ответ Telegram (видео): {response.status_code} {response.text}")
+
         if response.status_code == 200:
             logger.info("Видео успешно отправлено в Телеграм")
-            # Если был создан временный mp4, можно удалить его после отправки
-            if ext == '.webm' and mp4_path and os.path.exists(mp4_path):
-                try:
-                    os.remove(mp4_path)
-                    logger.debug(f"Удалён временный файл конвертированного видео: {mp4_path}")
-                except Exception as e:
-                    logger.error(f"Ошибка удаления временного файла: {e}")
+            # Удаляем временные файлы
+            if mp4_path and os.path.exists(mp4_path):
+                os.remove(mp4_path)
+                logger.debug(f"Удалён временный файл конвертированного видео: {mp4_path}")
             return True
         else:
             logger.error(f"Ошибка при отправке видео: {response.status_code} {response.text}")
@@ -238,9 +286,8 @@ def send_video_to_telegram(file_path, caption=None, config=None):
 
 # Отправка медиа (фото или видео) в Telegram
 def send_media_to_telegram(file_path, caption=None, config=None):
-    video_extensions = ('.mp4', '.mov', '.mkv', '.avi')  # убрал .webm из видео
-    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.webm')  # добавил .webm сюда, чтобы обрабатывать через send_video_to_telegram с конвертацией
-
+    video_extensions = ('.mp4', '.mov', '.mkv', '.avi')
+    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.webm')
     ext = os.path.splitext(file_path)[1].lower()
     if ext in video_extensions or ext == '.webm':
         return send_video_to_telegram(file_path, caption, config)
@@ -262,15 +309,11 @@ def download_random_image(config=None):
     tags = config['e621']['tags']
     tags_count = config['settings'].get('tags_count', len(tags))
     blacklist = config['settings'].get('blacklist', [])
-
-    # Убираем None и пустые из blacklist
     clean_blacklist = [tag for tag in blacklist if tag and str(tag).lower() != 'none']
-
     attempts = 0
-    max_attempts = 3
+    max_attempts = 5
     USERNAME = config['e621']['username']
     API_KEY = config['e621']['api_key']
-
     proxy_on = config['settings'].get('proxy_on', False)
     proxies = None
     if proxy_on:
@@ -282,73 +325,52 @@ def download_random_image(config=None):
             'http': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}',
             'https': f'socks5h://{PROXY_LOGIN}:{PROXY_PASSW}@{PROXY_HOST}:{PROXY_PORT}'
         }
-
     while attempts < max_attempts:
         attempts += 1
         try:
             selected_tags = ' '.join(random.sample(tags, k=min(tags_count, len(tags))))
             blacklist_tags = ' '.join(f'-{tag}' for tag in clean_blacklist)
             tags_query = f'order:random {selected_tags} {blacklist_tags}'
-
             headers = {'User-Agent': f'ImageDownloader/1.0 (by {USERNAME} on e621)'}
             auth = HTTPBasicAuth(USERNAME, API_KEY)
-
             logger.info(f"Запрос к API e621 с тегами: {tags_query}")
-
             response = requests.get(url, headers=headers, params={'tags': tags_query, 'limit': 1},
                                     proxies=proxies, timeout=30, auth=auth)
             logger.debug(f"Ответ сервера e621: {response.status_code} {response.text[:1000]}")
-
             response.raise_for_status()
             data = response.json()
-
             if not data.get('posts'):
                 logger.warning("Не найдено изображений")
                 continue
-
             post = data['posts'][0]
             post_id = post['id']
             post_md5 = post['file']['md5']
-
             if post_id in sent_posts or post_md5 in sent_posts:
                 logger.info(f"Найден дубликат поста с ID {post_id} (попытка {attempts}/{max_attempts}), пропускаем и ищем новый.")
                 continue
-
             image_url = post['file']['url']
             if not image_url:
                 logger.warning("У поста нет доступного изображения")
                 continue
-
             post_url = f"https://e621.net/posts/{post_id}"
             logger.info(f"Обрабатываем пост: {post_url}")
-
             date_folder = datetime.now().strftime("%Y-%m-%d")
             os.makedirs(f'downloaded_images/{date_folder}', exist_ok=True)
-
             file_extension = image_url.split('.')[-1].split('?')[0]
             timestamp = int(time.time())
             filename = f'downloaded_images/{date_folder}/e621_image_{timestamp}.{file_extension}'
-
             logger.info(f"Скачиваем изображение: {image_url}")
-
             img_response = requests.get(image_url, headers=headers, proxies=proxies, timeout=30)
             logger.debug(f"Ответ сервера с изображением: {img_response.status_code}")
-
             img_response.raise_for_status()
-
             with open(filename, 'wb') as f:
                 f.write(img_response.content)
-
             logger.info(f"Изображение сохранено: {filename}")
-
             artists = post['tags'].get('artist', [])
             characters = post['tags'].get('character', [])
-
             caption_text = get_random_caption('captions.txt')
-
             artists_line = f"👨‍🎨 Художник: {' '.join(f'#{tag}' for tag in artists)}" if artists else ""
             characters_line = f"🎭 Персонаж: {' '.join(f'#{tag}' for tag in characters)}" if characters else ""
-
             caption_parts = [
                 caption_text,
                 artists_line,
@@ -356,14 +378,11 @@ def download_random_image(config=None):
                 f"----",
                 f"[Открыть оригинал]({post_url})"
             ]
-
             caption = "\n".join(filter(None, caption_parts))
-
             if send_media_to_telegram(filename, caption=caption, config=config):
                 sent_posts.add(post_id)
                 sent_posts.add(post_md5)
                 save_sent_posts(sent_posts)
-
                 # Сохраняем подробности публикации для просмотра в UI
                 post_data = {
                     "id": post_id,
@@ -373,18 +392,15 @@ def download_random_image(config=None):
                     "post_url": post_url
                 }
                 save_published_post(post_data)
-
                 return True
             else:
                 logger.error("Не удалось отправить медиа, пробуем другой пост...")
-
         except RequestException as e:
             logger.error(f"Ошибка при загрузке: {e}")
             break
         except Exception as e:
             logger.error(f"Непредвиденная ошибка: {e}")
             break
-
     logger.warning("Не удалось найти уникальное изображение после нескольких попыток, пропускаем публикацию")
     return False
 
